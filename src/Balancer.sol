@@ -1,4 +1,4 @@
-//SPDX-License-Idenfier: MIT
+//SPDX-License-Identifier: MIT
 
 pragma solidity 0.8.20;
 
@@ -8,25 +8,25 @@ import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
-
-contract YieldingContract is ReentrancyGuard, Ownable {
+contract YieldingContract is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    struct  UserPool{
-    unit256 shares;
-    uint256 depositToken;
-    uint256 depositTime;
-    bool withdraw;
-    bool isActive;
+    struct UserPool {
+        uint256 shares;
+        uint256 depositToken;
+        uint256 depositTime;
+        bool withdraw;
+        bool isActive;
     }
 
-    struct  BalancerPool{
-        address entryfee;
-        uint256 rewardfee;
-        uint256 shares;
+    struct BalancerPool {
+        uint256 entryFeeRate;
+        uint256 totalFees;
+        uint256 totalShares;
         uint256 totalLiquidity;
         uint256 poolCreationTime;
     }
+
     struct LiquidityProvider {
         uint256 lpToken;
         uint256 depositAmount;
@@ -34,123 +34,138 @@ contract YieldingContract is ReentrancyGuard, Ownable {
         bool isActive;
     }
 
-    mapping(address => LiquidityProvider) public LiquidityProviders;
+    mapping(address => LiquidityProvider) public liquidityProviders;
     mapping(address => UserPool) public users;
-    address[] public  allProviders;
-    unit256[] totalUsersDeposited;
+    address[] public allProviders;
+    uint256[] public totalUsersDeposited;
 
+    BalancerPool public balancerPool;
 
+    event LiquidityAdded(address indexed provider, uint256 amount, uint256 shares);
+    event LiquidityRemoved(address indexed provider, uint256 amount, uint256 rewards);
+    event UserDeposit(address indexed user, uint256 amount, uint256 shares);
+    event UserWithdrawal(address indexed user, uint256 amount, uint256 rewards);
 
-    constructor(string memory _name, string memory _symbol) ERC721(_name, _symbol) {
-        BalancerPool = BalancerPool({
-            entryFeeRate: 100,
+    constructor()  {
+        balancerPool = BalancerPool({
+            entryFeeRate: 100, 
             totalFees: 0,
             totalShares: 0,
             totalLiquidity: 0,
             poolCreationTime: block.timestamp
-            
-        })
-
+        });
     }
-    
 
-    function joinBalancer() external payable {
-        require(msg.vaule > 0, "Must deposit vaule greater than zero");
+    function joinBalancerPool() external payable nonReentrant {
+        require(msg.value > 0, "Must deposit value greater than zero");
 
-        uint256 entryfee = (msg.vaule * BalancerPool.entryFeeRate) / 10000;
-
-        uint256 actualDeposit = msg.vaule - entryfee;
-
+        uint256 entryFee = (msg.value * balancerPool.entryFeeRate) / 10000;
+        uint256 actualDeposit = msg.value - entryFee;
 
         uint256 newShares;
         if (balancerPool.totalShares == 0) {
             newShares = actualDeposit;
         } else {
-        uint weeksActive = (block.timestamp - poolCreationTime) / 1 weeks;
-        uint bonusMultiplier = 100 + weeksActive; 
-        
-        newShares = (actualDeposit * balancerPool.totalShares * bonusMultiplier) / 
-                   (balancerPool.totalLiquidity * 100);
-       }
-
-        BalancerPool.totalFees + entryfee;
-        BalancerPool.totalLiquidity + actualDeposit;
-        BalancerPool.totalShares + newShares;
-
-        LiquidityProvider storage userProvider = LiquidityProvider({
-            lpToken: LiquidityProviders[msg.sender].lpToken + newShares;
-            depositAmount: LiquidityProviders[msg.sender].depositAmount + msg.vaule;
-            joinTime: block.timestamp;
-            isActive: true;
-        });
-        LiquidityProviders[msg.sender].push(userProvider);
-        allProviders.push(msg.sender);
-    }
-
-    function leavePool() external {
-        require(LiquidityProviders[msg.sender].isActive, "Not a liquidity Provider");
-
-        uint256 rewards = liquidityProviderRewards(LiquidityProviders[msg.sender]);
-        uint256 totalpayOut = LiquidityProviders[msg.sender].depositAmount + rewards;
-
-        BalancerPool.totalShares -= LiquidityProviders[msg.sender].lpToken;
-        BalancerPool.totalLiquidity -= LiquidityProviders[msg.sender].depositAmount;
-
-        LiquidityProviders[msg.sender].isActive = false;
-
-
-        payable(msg.sender).transfer(totalpayOut);
-
-    }
-
-    function depositFundInContract(uint256 _amount) external {
-        require(msg.vaule > 0, "Deposit fee Must not be Zero");
-
-        uint256 actualDeposit  = msg.vaule;
-
-        uint entryfee = (actualDeposit * BalancerPool.entryFeeRate) / 10000
-        BalancerPool.totalFees += entryfee
-
-        if (BalancerPool.totalShares == 0) {
-            uint256 shares = actualDeposit;
+            uint256 weeksActive = (block.timestamp - balancerPool.poolCreationTime) / 1 weeks;
+            uint256 bonusMultiplier = 100 + weeksActive;
+            
+            newShares = (actualDeposit * balancerPool.totalShares * bonusMultiplier) / 
+                       (balancerPool.totalLiquidity * 100);
         }
-        else {
-            uint256 weekActive = (block.timestamp - depositTime) / 1 week;
-            uint256 shares = (actualDeposit * weekActive * BalancerPool.totalShares ) / (BalancerPool.totalLiquidity * 100);
+
+        balancerPool.totalFees += entryFee;
+        balancerPool.totalLiquidity += actualDeposit;
+        balancerPool.totalShares += newShares;
+
+        LiquidityProvider storage provider = liquidityProviders[msg.sender];
+        if (!provider.isActive) {
+            allProviders.push(msg.sender);
+            provider.joinTime = block.timestamp;
+            provider.isActive = true;
         }
-        BalancerPool.totalLiquidity += actualDeposit;
-        BalancerPool.totalShares += actualDeposit;
         
+        provider.lpToken += newShares;
+        provider.depositAmount += msg.value;
 
-        UserPool storage user = UserPool({
-            shares: shares;
-            depositToken: actualDeposit;
-            depositTime: block.timestamp;
-            withdraw: false;
-            isActive: true
-        });
-        totalUsersDeposited++;
-
-
+        emit LiquidityAdded(msg.sender, msg.value, newShares);
     }
-    function withdrawFromYielding() external payable {
+
+    function leavePool() external nonReentrant {
+        require(liquidityProviders[msg.sender].isActive, "Not an active liquidity provider");
+
+        LiquidityProvider storage provider = liquidityProviders[msg.sender];
+        uint256 rewards = liquidityProviderRewards(msg.sender);
+        uint256 totalPayout = provider.depositAmount + rewards;
+
+        require(address(this).balance >= totalPayout, "Insufficient contract balance");
+
+        balancerPool.totalShares -= provider.lpToken;
+        balancerPool.totalLiquidity -= provider.depositAmount;
+
+        provider.isActive = false;
+        provider.lpToken = 0;
+        provider.depositAmount = 0;
+
+        payable(msg.sender).transfer(totalPayout);
+
+        emit LiquidityRemoved(msg.sender, totalPayout, rewards);
+    }
+
+    function depositFundInContract() external payable nonReentrant {
+        require(msg.value > 0, "Deposit amount must not be zero");
+
+        uint256 entryFee = (msg.value * balancerPool.entryFeeRate) / 10000;
+        uint256 actualDeposit = msg.value - entryFee;
+
+        balancerPool.totalFees += entryFee;
+
+        uint256 shares;
+        if (balancerPool.totalShares == 0) {
+            shares = actualDeposit;
+        } else {
+            uint256 weeksActive = (block.timestamp - balancerPool.poolCreationTime) / 1 weeks;
+            uint256 bonusMultiplier = 100 + weeksActive;
+            shares = (actualDeposit * bonusMultiplier * balancerPool.totalShares) / (balancerPool.totalLiquidity * 100);
+        }
+
+        balancerPool.totalLiquidity += actualDeposit;
+        balancerPool.totalShares += shares;
+
         UserPool storage user = users[msg.sender];
-        require(user.isActive == false , "");
-        require(user.withdraw == false , "");
+        user.shares += shares;
+        user.depositToken += actualDeposit;
+        user.depositTime = block.timestamp;
+        user.withdraw = false;
+        user.isActive = true;
 
-        uint256 reward = reward;
+        totalUsersDeposited.push(actualDeposit);
 
-        uint256 deposit = user.actualDeposit;
-        uint256 payout = deposit + reward;
-        BalancerPool.totalShares -= user.shares;
-        BalancerPool.totalLiquidity -= user.actualDeposit;
+        emit UserDeposit(msg.sender, msg.value, shares);
+    }
+
+    function withdrawFromYielding() external nonReentrant {
+        UserPool storage user = users[msg.sender];
+        require(user.isActive, "User is not active");
+        require(!user.withdraw, "User has already withdrawn");
+
+        uint256 rewards = calculateUsersYield(msg.sender);
+        uint256 deposit = user.depositToken;
+        uint256 payout = deposit + rewards;
+
+        require(address(this).balance >= payout, "Insufficient contract balance");
+
+        balancerPool.totalShares -= user.shares;
+        balancerPool.totalLiquidity -= user.depositToken;
+
+        user.withdraw = true;
+        user.isActive = false;
+        user.shares = 0;
+        user.depositToken = 0;
 
         payable(msg.sender).transfer(payout);
 
-        user.withdraw = true;
-        user.isActive = true;
+        emit UserWithdrawal(msg.sender, payout, rewards);
     }
-
 
     function liquidityProviderRewards(address provider) public view returns (uint256) {
         LiquidityProvider memory lp = liquidityProviders[provider];
@@ -158,14 +173,86 @@ contract YieldingContract is ReentrancyGuard, Ownable {
             return 0;
         }
         
-        uint256 feeShare = (balancerPool.totalFees * lp.shares) / balancerPool.totalShares;
+        uint256 feeShare = (balancerPool.totalFees * lp.lpToken) / balancerPool.totalShares;
         
-        uint256 currentValue = (balancerPool.totalLiquidity * lp.shares) / balancerPool.totalShares;
+        uint256 currentValue = (balancerPool.totalLiquidity * lp.lpToken) / balancerPool.totalShares;
         uint256 poolGrowth = currentValue > lp.depositAmount ? currentValue - lp.depositAmount : 0;
         
         return feeShare + poolGrowth;
     }
-    function calculateUsersYield(address user) external payable {
 
+    function calculateUsersYield(address userAddress) public view returns (uint256) {
+        UserPool memory user = users[userAddress];
+        if (!user.isActive || balancerPool.totalShares == 0) {
+            return 0;
+        }
+
+        uint256 feeShare = (balancerPool.totalFees * user.shares) / balancerPool.totalShares;
+        
+        uint256 weeksStaked = (block.timestamp - user.depositTime) / 1 weeks;
+        uint256 timeBonus = (user.depositToken * weeksStaked) / 100;
+        
+        uint256 currentValue = (balancerPool.totalLiquidity * user.shares) / balancerPool.totalShares;
+        uint256 poolGrowth = currentValue > user.depositToken ? currentValue - user.depositToken : 0;
+        
+        return feeShare + timeBonus + poolGrowth;
     }
+
+    function getPoolInfo() external view returns (
+        uint256 totalLiquidity,
+        uint256 totalShares,
+        uint256 totalFees,
+        uint256 entryFeeRate
+    ) {
+        return (
+            balancerPool.totalLiquidity,
+            balancerPool.totalShares,
+            balancerPool.totalFees,
+            balancerPool.entryFeeRate
+        );
+    }
+ 
+
+    function getUserInfo(address userAddress) external view returns (
+        uint256 shares,
+        uint256 depositToken,
+        uint256 depositTime,
+        bool withdraw,
+        bool isActive,
+        uint256 pendingRewards
+    ) {
+        UserPool memory user = users[userAddress];
+        return (
+            user.shares,
+            user.depositToken,
+            user.depositTime,
+            user.withdraw,
+            user.isActive,
+            calculateUsersYield(userAddress)
+        );
+    }
+
+    function getLiquidityProviderInfo(address lpAddress) external view returns (
+        uint256 shares,
+        uint256 depositToken,
+        uint256 depositTime,
+        bool isActive
+    ) {
+        LiquidityProvider memory lp = liquidityProviders[lpAddress];
+        return (
+            lp.lpToken,
+            lp.depositAmount,
+            lp.joinTime,
+            lp.isActive
+        );
+    }
+
+
+
+    // function updateEntryFeeRate(uint256 newRate) external onlyOwner {
+    //     require(newRate <= 1000, "Fee rate cannot exceed 10%"); 
+    //     balancerPool.entryFeeRate = newRate;
+    // }
+
+    receive() external payable {}
 }
